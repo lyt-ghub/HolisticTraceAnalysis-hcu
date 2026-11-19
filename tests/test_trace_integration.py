@@ -3,8 +3,10 @@
 import os
 import unittest
 from typing import cast
+from unittest.mock import patch
 
 from hta.common.trace import parse_trace_file, Trace
+from hta.trace_analysis import TraceAnalysis
 from hta.utils.test_utils import get_test_data_dir
 
 
@@ -99,6 +101,23 @@ class TestTraceLoadTracesEntryPoint(unittest.TestCase):
         # Re-loading is a no-op
         trace.load_traces(use_multiprocessing=False)
         self.assertTrue(trace.is_parsed)
+
+    def test_load_multiple_ranks_without_fork(self) -> None:
+        path = os.path.join(
+            get_test_data_dir(),
+            "cpu_only",
+            "rank-34.Jul_15_10_52_41.1074.pt.trace.json.gz",
+        )
+        with (
+            patch("hta.common.trace.mp.get_all_start_methods", return_value=["spawn"]),
+            patch("hta.common.trace.mp.get_context") as get_context,
+        ):
+            analysis = TraceAnalysis(trace_files={0: path, 1: path}, trace_dir="")
+
+        get_context.assert_not_called()
+        self.assertEqual(analysis.t.get_ranks(), [0, 1])
+        for rank in analysis.t.get_ranks():
+            self.assertFalse(analysis.t.get_trace(rank).empty)
 
 
 class TestTraceCtorEmpty(unittest.TestCase):

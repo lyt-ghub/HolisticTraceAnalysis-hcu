@@ -42,6 +42,7 @@ _RUNTIME_LAUNCH_EVENT_NAMES = (
     "cudaMemsetAsync",
     "runFunction - job_prep_and_submit_for_execution",
     "hipLaunchKernel",
+    "hipExtLaunchKernel",
     "hipExtModuleLaunchKernel",
     "hipMemsetAsync",
     "hipMemcpyAsync",
@@ -374,6 +375,10 @@ class TraceSymbolTable:
 
     def get_gpu_kernel_cat_ids(self) -> List[int]:
         return list(self.get_symbol_ids(KERNEL_CATEGORY_PATTERN).values())
+
+    def get_gpu_kernel_mask(self, df: pd.DataFrame) -> pd.Series:
+        """Select accelerator activity, excluding CPU events that carry a stream ID."""
+        return df["cat"].isin(self.get_gpu_kernel_cat_ids()) & df["stream"].ne(-1)
 
     def get_profiler_step_ids(self) -> List[int]:
         return list(self.get_symbol_ids(ProfilerStepGroupingPattern).values())

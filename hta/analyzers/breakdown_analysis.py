@@ -75,11 +75,9 @@ class BreakdownAnalysis:
 
         kernel_per_rank: Dict[str, Dict] = defaultdict(dict)
         for rank, trace_df in t.traces.items():
-            gpu_kernels = trace_df[trace_df["stream"].ne(-1)].copy()
-            gpu_kernels["kernel_type"] = gpu_kernels[["name"]].apply(
-                lambda x: get_kernel_type(sym_table[x["name"]]), axis=1
-            )
-            gpu_kernels["name"] = gpu_kernels["name"].apply(lambda x: sym_table[x])
+            gpu_kernels = trace_df.loc[t.symbol_table.get_gpu_kernel_mask(trace_df)].copy()
+            gpu_kernels["name"] = gpu_kernels["name"].map(sym_table.__getitem__)
+            gpu_kernels["kernel_type"] = gpu_kernels["name"].map(get_kernel_type)
 
             # Create kernel type dataframe
             kernel_type_df = pd.concat(
@@ -601,41 +599,33 @@ class BreakdownAnalysis:
             aggregated pd.DataFrame by "name" column with ["sum", "max", "min", "mean", "std"]
         """
 
-        gpu_kernel_time = gpu_kernel_time.groupby(by=["name"])["dur"].agg(
-            ["sum", "max", "min", "mean", "std"]
-        )
-        gpu_kernel_time.reset_index(inplace=True)
-        gpu_kernel_time = gpu_kernel_time.sort_values(
+        duration_stats = ["sum", "max", "min", "mean", "std"]
+        kernel_stats = gpu_kernel_time.groupby("name")["dur"].agg(duration_stats)
+        kernel_stats = kernel_stats.reset_index().sort_values(
             by=["sum"], ascending=False, ignore_index=True
         )
-        gpu_kernel_time.fillna({"std": 0}, inplace=True)
 
-        # if there are more than num_kernels kernels, starting to aggregate kernels
-        if gpu_kernel_time.shape[0] > num_kernels:
-            if allowlist_names is not None:
-                keep_idx = gpu_kernel_time.name.isin(allowlist_names)
-            else:
-                # always false
-                keep_idx = gpu_kernel_time["sum"] < 0
-
-            gpu_kernel_time["cumsum"] = gpu_kernel_time["sum"].cumsum()
-            quantiles = gpu_kernel_time["cumsum"].quantile(duration_ratio)
-            # FIXME linter mismatch between fbcode and git T183519933
-            # fmt: off
-            gpu_kernel_time.loc[~keep_idx & (gpu_kernel_time["cumsum"] > quantiles), "name"] = (
-                "others"
+        if len(kernel_stats) > num_kernels:
+            keep_separate = (
+                kernel_stats["name"].isin(allowlist_names)
+                if allowlist_names is not None
+                else kernel_stats["sum"].lt(0)
             )
-            # fmt: on
-            gpu_kernel_time.loc[
-                ~keep_idx & (gpu_kernel_time.index >= num_kernels), "name"
-            ] = "others"
-            gpu_kernel_time = gpu_kernel_time.groupby(by=["name"])["sum"].agg(
-                ["sum", "max", "min", "mean", "std"]
+            cumulative_duration = kernel_stats["sum"].cumsum()
+            combine = ~keep_separate & (
+                (cumulative_duration > cumulative_duration.quantile(duration_ratio))
+                | (kernel_stats.index >= num_kernels)
             )
-            gpu_kernel_time.reset_index(inplace=True)
-            gpu_kernel_time.fillna({"std": 0}, inplace=True)
+            combined_names = kernel_stats.loc[combine, "name"]
 
-        return gpu_kernel_time
+            # Aggregate event durations so every row describes individual invocations.
+            event_names = gpu_kernel_time["name"]
+            groups = event_names.mask(event_names.isin(combined_names), "others")
+            kernel_stats = (
+                gpu_kernel_time.groupby(groups)["dur"].agg(duration_stats).reset_index()
+            )
+
+        return kernel_stats.fillna({"std": 0})
 
     @classmethod
     def _get_idle_time_for_kernels(cls, kernels_df: pd.DataFrame) -> Tuple[int, int]:
@@ -660,15 +650,22 @@ class BreakdownAnalysis:
         Temporal breakdown implementation. See `get_temporal_breakdown` in `trace_analysis.py` for details.
         """
         sym_table = t.symbol_table.get_sym_table()
+        sync_cat = t.symbol_table.get_sym_id_map().get("cuda_sync")
 
         def idle_time_per_rank(trace_df: pd.DataFrame) -> Tuple[int, int, int, int]:
             """returns idle_time (us) , compute_time (us), non_compute_time (us), total_time (us)"""
-            gpu_kernels = trace_df[trace_df["stream"].ne(-1)].copy()
+            activity = t.symbol_table.get_gpu_kernel_mask(trace_df)
+            if sync_cat is not None:
+                # Keep stream-level synchronization in the non-compute timeline.
+                activity |= trace_df["cat"].eq(sync_cat) & trace_df["stream"].ne(-1)
+            gpu_kernels = trace_df.loc[activity].copy()
+            if gpu_kernels.empty:
+                return 0, 0, 0, 0
+
             idle_time, kernel_time = cls._get_idle_time_for_kernels(gpu_kernels)
 
-            gpu_kernels["kernel_type"] = gpu_kernels[["name"]].apply(
-                lambda x: get_kernel_type(sym_table[x["name"]]), axis=1
-            )
+            names = gpu_kernels["name"].map(sym_table.__getitem__)
+            gpu_kernels["kernel_type"] = names.map(get_kernel_type)
 
             # Isolate computation kernels and merge each one of them.
             comp_kernels = merge_kernel_intervals(

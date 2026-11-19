@@ -20,6 +20,9 @@ classifiers = [
 ]
 dynamic = ["dependencies"]
 
+[project.optional-dependencies]
+excel = ["xlsxwriter>=3.1"]
+
 [project.urls]
 Homepage = "https://github.com/facebookresearch/HolisticTraceAnalysis"
 Issues = "https://github.com/facebookresearch/HolisticTraceAnalysis/issues"

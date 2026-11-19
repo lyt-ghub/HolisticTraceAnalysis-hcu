@@ -485,6 +485,8 @@ class Trace:
             use_multiprocessing (bool) : whether the parser using multiprocessing or not.
             use_memory_profiling (bool): whether the parser memory profiles or not.
         """
+        # The parallel parser requires fork, which is unavailable on Windows.
+        use_multiprocessing = use_multiprocessing and "fork" in mp.get_all_start_methods()
         logger.debug(
             f"entering {sys._getframe().f_code.co_name}(ranks={ranks}, use_multiprocessing={use_multiprocessing})"
         )
@@ -689,7 +691,9 @@ class Trace:
         return parse_trace_dict(trace_filepath)
 
     def write_raw_trace(self, output_file: str, trace_contents: Dict[str, Any]) -> None:
-        with gzip.open(output_file, "wt") as fp:
+        """Write plain JSON for .json files and gzip for compressed traces."""
+        open_trace = open if os.fspath(output_file).endswith(".json") else gzip.open
+        with open_trace(output_file, "wt", encoding="utf-8") as fp:
             json.dump(trace_contents, fp, indent=2)
 
     def _normalize_trace_filenames(self) -> None:

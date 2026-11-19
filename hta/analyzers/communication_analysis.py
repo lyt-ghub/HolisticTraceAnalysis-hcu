@@ -30,10 +30,9 @@ class CommunicationAnalysis:
             """
             Compute the overlap percentage between communication and computation kernels for one rank.
             """
-            gpu_kernels = trace_df[trace_df["stream"].ne(-1)].copy()
-            gpu_kernels["kernel_type"] = gpu_kernels[["name"]].apply(
-                lambda x: get_kernel_type(sym_table[x["name"]]), axis=1
-            )
+            gpu_kernels = trace_df.loc[t.symbol_table.get_gpu_kernel_mask(trace_df)].copy()
+            names = gpu_kernels["name"].map(sym_table.__getitem__)
+            gpu_kernels["kernel_type"] = names.map(get_kernel_type)
 
             # Isolate communication and computation kernels and merge each one of them.
             comp_kernels = merge_kernel_intervals(
@@ -46,6 +45,9 @@ class CommunicationAnalysis:
                     gpu_kernels["kernel_type"].eq(KernelType.COMMUNICATION.name)
                 ].copy()
             )
+            communication_time = (comm_kernels["end"] - comm_kernels["ts"]).sum()
+            if communication_time == 0:
+                return float("nan")
 
             # When a communication kernel starts and ends, the cumulative status is changed by 1 and -1;
             # when a computation kernel starts and ends, the cumulative status is changed by 2 and -2.
@@ -69,9 +71,8 @@ class CommunicationAnalysis:
             shifted_overlap = overlap.merge(
                 status_df.shift(-1).dropna(), left_index=True, right_index=True
             )
-            return (shifted_overlap["time_y"] - shifted_overlap["time_x"]).sum() / (
-                comm_kernels["end"] - comm_kernels["ts"]
-            ).sum()
+            overlap_time = (shifted_overlap["time_y"] - shifted_overlap["time_x"]).sum()
+            return overlap_time / communication_time
 
         result: Dict[str, List[float]] = defaultdict(list)
         for rank, trace_df in t.traces.items():

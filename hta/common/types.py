@@ -133,7 +133,9 @@ ComputeKernelGroupingPattern = GroupingPattern(
 )
 
 KERNEL_CATEGORY_PATTERN = GroupingPattern(
-    re.compile("(kernel)|(gpu_mem.+)|(mtia_ccp_events)"), False, "GPU Kernels"
+    re.compile(r"kernel|gpu_mem.+|mtia_ccp_events|(?:Kernel|Memcpy|Memset)$"),
+    False,
+    "GPU Kernels",
 )
 
 KERNEL_LAUNCH_CATEGORY_PATTERN = GroupingPattern(

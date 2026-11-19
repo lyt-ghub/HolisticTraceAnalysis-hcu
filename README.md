@@ -133,6 +133,60 @@ ql_summary = analyzer.get_queue_length_summary()
 
 For a detailed demo run the `trace_analysis_demo` and `trace_diff_demo` notebooks in the examples folder.
 
+#### Export Megatron profiler traces to Excel
+
+```sh
+pip install -e '.[excel]'
+python -m hta.megatron_profile /path/to/trace-directory /path/to/megatron_profile.xlsx
+```
+
+The command accepts one PyTorch Profiler Chrome trace (`.json` or `.json.gz`) or
+a directory of traces from the training job. It writes one worksheet per file
+with the Megatron profiler table headers. The report includes all recorded CPU
+operator and runtime activities and device kernels, copies, and sets in the trace
+window. Entries are grouped by name, event category, and recorded input shapes.
+Durations are numeric microseconds, and unrecorded input shapes are blank.
+
+Timing is reconstructed from the trace. CPU totals include nested operations,
+and CPU self time excludes their intervals. Device durations are also recorded
+on their own rows. For CPU rows, linked device durations are attributed by
+external ID or runtime correlation when the owner is unambiguous, and device
+totals include nested operations. These figures can differ from the native
+PyTorch Profiler text table.
+
+#### Analyze HIP cross-stream waits on DCU
+
+Capture the PyTorch Profiler trace and the DTK `hipprof` trace in the same
+training run. Enable PyTorch Profiler in Megatron as usual and run the training
+command under `hipprof`.
+
+```sh
+/opt/dtk/bin/hipprof --hip-trace --barrier --trace-args --follow-fork \
+  --output-type 0 -o /path/to/run/hipprof <megatron-training-command>
+```
+
+Generate one enriched trace per Rank and point `TraceAnalysis` to the directory
+of enriched traces. Pass all JSON files if `hipprof` split the capture.
+
+```sh
+python -m hta.hip_sync /path/to/trace_rank0.json /path/to/run/hipprof*.json \
+  /path/to/enriched/trace_rank0.json
+```
+
+The command uses process and thread IDs, runtime correlation IDs, and
+timestamps to verify matches. It pairs each wait with an explicit HIP event
+record or a kernel launch that signals the event through `stopEvent`. A
+zero-duration `hip_sync` marker uses the CPU wait submission time and links
+the confirmed tasks for critical path analysis. The reported `added` count
+includes `kernel_completion_waits`.
+
+When DTK barriers show that a signal goes through a queue with no recorded
+kernel or memory work and returns to the originating task queue, both API
+calls count toward `round_trip_waits`. The graph keeps the existing order
+on the originating queue. Waits with insufficient evidence remain unresolved.
+On the tested DCU stack, PyTorch's synchronization option produced HIP API
+calls without the event handles needed for these matches.
+
 #### Advanced Usage
 
 __Logging Level__

@@ -4,6 +4,7 @@ import os
 import unittest
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Dict, List, Tuple
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from hta.analyzers.critical_path_analysis import (
     CriticalPathAnalysis,
     restore_cpgraph,
 )
+from hta.common.trace_file import read_trace
 from hta.common.trace_parser import (
     _auto_detect_parser_backend,
     get_default_trace_parsing_backend,
@@ -228,7 +230,7 @@ class CriticalPathAnalysisTestCase(unittest.TestCase):
         cp_graph = self._critical_path_on_simple_add_trace()
 
         # Overlaid trace with show_all_edges=True
-        with TemporaryDirectory(dir="/tmp") as tmpdir:
+        with TemporaryDirectory() as tmpdir:
             overlaid_trace = self.simple_add_trace.overlay_critical_path_analysis(
                 0,
                 cp_graph,
@@ -236,7 +238,11 @@ class CriticalPathAnalysisTestCase(unittest.TestCase):
                 only_show_critical_events=False,
                 show_all_edges=True,
             )
-            self.assertIn("overlaid_critical_path_", overlaid_trace)
+            trace_filename = Path(self.simple_add_trace.t.trace_files[0]).name
+            self.assertEqual(
+                Path(overlaid_trace),
+                Path(tmpdir) / f"overlaid_critical_path_{trace_filename}",
+            )
 
             stats = self._check_overlaid_trace(overlaid_trace)
             self.assertEqual(stats.marked_critical_events, 159)
@@ -264,7 +270,7 @@ class CriticalPathAnalysisTestCase(unittest.TestCase):
             )
 
         # Overlaid trace with show_all_edges=False (default: CPU, GPU sync, kernel launch)
-        with TemporaryDirectory(dir="/tmp") as tmpdir:
+        with TemporaryDirectory() as tmpdir:
             overlaid_trace = self.simple_add_trace.overlay_critical_path_analysis(
                 0,
                 cp_graph,
@@ -277,7 +283,7 @@ class CriticalPathAnalysisTestCase(unittest.TestCase):
             self.assertEqual(stats.marked_critical_edges, 21)
 
         # Overlaid trace showing only critical events
-        with TemporaryDirectory(dir="/tmp") as tmpdir:
+        with TemporaryDirectory() as tmpdir:
             overlaid_trace = self.simple_add_trace.overlay_critical_path_analysis(
                 0,
                 cp_graph,
@@ -290,21 +296,31 @@ class CriticalPathAnalysisTestCase(unittest.TestCase):
             self.assertEqual(stats.marked_critical_events, stats.total_event_count)
 
         # Missing output dir should be created automatically
-        tmpdir = "/tmp/hta_test_path_does_not_exist"
-        try:
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "overlaid traces"
             overlaid_trace = self.simple_add_trace.overlay_critical_path_analysis(
                 0,
                 cp_graph,
-                output_dir=tmpdir,
+                output_dir=str(output_dir),
                 only_show_critical_events=False,
                 show_all_edges=True,
             )
-            self.assertTrue(os.path.exists(tmpdir))
-        finally:
-            if os.path.exists(overlaid_trace):
-                os.remove(overlaid_trace)
-            if os.path.exists(tmpdir):
-                os.removedirs(tmpdir)
+            self.assertEqual(Path(overlaid_trace).parent, output_dir)
+            self.assertTrue(Path(overlaid_trace).is_file())
+
+    def test_overlay_plain_json_can_be_read_as_json(self) -> None:
+        cp_graph = self._critical_path_on_simple_add_trace()
+        raw_trace = self.simple_add_trace.t.get_raw_trace_for_one_rank(0)
+        with TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "trace.json"
+            source.write_text(json.dumps(raw_trace), encoding="utf-8")
+            with patch.dict(self.simple_add_trace.t.trace_files, {0: str(source)}):
+                output = self.simple_add_trace.overlay_critical_path_analysis(
+                    0, cp_graph, output_dir=tmpdir
+                )
+
+            self.assertEqual(Path(output), Path(tmpdir) / "overlaid_critical_path_trace.json")
+            self.assertTrue(read_trace(output)["traceEvents"])
 
     def test_overlay_marks_critical_event_without_args(self) -> None:
         cp_graph = self._critical_path_on_simple_add_trace()
@@ -320,7 +336,7 @@ class CriticalPathAnalysisTestCase(unittest.TestCase):
             "get_raw_trace_for_one_rank",
             return_value=raw_trace,
         ):
-            with TemporaryDirectory(dir="/tmp") as tmpdir:
+            with TemporaryDirectory() as tmpdir:
                 output = self.simple_add_trace.overlay_critical_path_analysis(
                     0,
                     cp_graph,
@@ -353,7 +369,7 @@ class CriticalPathAnalysisTestCase(unittest.TestCase):
             "get_raw_trace_for_one_rank",
             return_value=raw_trace,
         ):
-            with TemporaryDirectory(dir="/tmp") as tmpdir:
+            with TemporaryDirectory() as tmpdir:
                 output = self.simple_add_trace.overlay_critical_path_analysis(
                     0,
                     cp_graph,
@@ -1052,7 +1068,7 @@ class EndToEndTestCase(unittest.TestCase):
                 )
                 self.assertTrue(success)
 
-                with TemporaryDirectory(dir="/tmp") as tmpdir:
+                with TemporaryDirectory() as tmpdir:
                     actual = critical_path_t.overlay_critical_path_analysis(
                         0,
                         cp_graph,
