@@ -17,7 +17,11 @@ The kernel breakdown can be calculated as follows:
    kernel_type_metrics_df, kernel_metrics_df = analyzer.get_gpu_kernel_breakdown()
 
 The first dataframe returned by the function contains the raw values used to
-generate the Pie chart.
+generate the Pie chart. Its time totals are in microseconds. Overlapping
+intervals within a kernel type are counted once, and intervals shared by
+multiple types are reported separately. Fractional microseconds are preserved
+when summing the intervals. To retain fractional timestamps when loading a
+trace, set ``HTA_DISABLE_NS_ROUNDING=1`` before running HTA.
 
 Kernel Duration Distribution
 ----------------------------

@@ -9,8 +9,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
+from hta.common.atomic_file import atomic_binary_output
 from hta.common.trace_file import read_trace
 
 
@@ -181,8 +181,7 @@ def export_megatron_profile(trace_path: str | Path, output_path: str | Path) -> 
 
     count = 0
     sheet_names: set[str] = set()
-    with TemporaryDirectory(dir=output_path.parent) as temp_dir:
-        temporary_output = Path(temp_dir) / "profile.xlsx"
+    with atomic_binary_output(output_path) as temporary_output:
         with xlsxwriter.Workbook(temporary_output) as workbook:
             header = workbook.add_format(
                 {"bold": True, "font_color": "#FFFFFF", "bg_color": "#203C55"}
@@ -224,7 +223,6 @@ def export_megatron_profile(trace_path: str | Path, output_path: str | Path) -> 
                     if row[11]:
                         sheet.write_string(row_index, 11, row[11])
                 count += len(rows)
-        temporary_output.replace(output_path)
     return count
 
 

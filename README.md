@@ -133,12 +133,58 @@ ql_summary = analyzer.get_queue_length_summary()
 
 For a detailed demo run the `trace_analysis_demo` and `trace_diff_demo` notebooks in the examples folder.
 
+#### Export an Excel report with charts
+
+```sh
+pip install -e '.[excel]'
+python -m hta.excel_report ./trace ./report/hta.xlsx
+python -m hta.excel_report ./trace-a ./report/compare.xlsx --label baseline --compare ./trace-b --compare-label candidate
+```
+
+Pass a PyTorch Profiler `.json` or `.json.gz` file or a directory containing
+one capture's per-rank traces. HTA analyzes the input and creates one workbook
+with editable charts linked to the corresponding tables. It includes device
+time, activity and stream idle breakdowns in milliseconds and percentages,
+as well as communication overlap and AllReduce kernel counts by rank. The
+chart sheet groups total duration, call counts, and mean and maximum single-call
+durations for the same hotspot kernels. Use `--bucket-size` and
+`--compare-bucket-size` to show the configured Megatron bucket thresholds in the
+capture labels.
+
+Pass `--training-log` with a Megatron text log, BERT DLLLogger JSON file, or
+ResNet50 text training log from the first capture's run to include training loss
+and available throughput. For ResNet50 throughput, the log's directory must also
+have the same run's `capture.json` with `batch_size` and `train_images`.
+HTA places the loss and throughput charts on the trace report's overview sheet.
+Use `--throughput-log` to overlay measurements from a separate run of the same
+framework, such as an unprofiled benchmark. Enable Megatron's `--log-throughput`
+for per-HCU TFLOP/s. BERT throughput requires DLLLogger step records with
+`training_step_sequences` and `training_step_seconds`.
+
+For inference traces with recognized vLLM or SGLang CPU annotations, HTA
+adds Prefill and Decode timing charts and a table with the original marker
+names. These durations are the recorded annotation spans. Request latency
+requires request timestamps.
+The hotspot charts show up to eight kernels per
+rank and preserve full names in the source sheet. Capture timestamps retain
+fractional microseconds. The overlap rate is blank for ranks without measured
+communication. To export the separate Megatron-style CPU/device operator
+table, use the command below.
+
 #### Export Megatron profiler traces to Excel
 
 ```sh
 pip install -e '.[excel]'
+python -m hta.megatron_analysis ./trace ./report
 python -m hta.megatron_profile /path/to/trace-directory /path/to/megatron_profile.xlsx
 ```
+
+`hta.megatron_analysis` writes separate reports such as
+`hcu_time_breakdown_by_rank.xlsx`, `hcu_kernel_hotspots_by_rank.xlsx`, and
+`communication_compute_overlap_by_rank.csv`. Start with
+`megatron_analysis_guide.md` in the output directory. Add `--compare ./trace-b`
+to export `gradient_bucket_overlap_comparison.xlsx` and its CSV version.
+`--label` and `--compare-label` set the names of the two captures.
 
 The command accepts one PyTorch Profiler Chrome trace (`.json` or `.json.gz`) or
 a directory of traces from the training job. It writes one worksheet per file
@@ -154,7 +200,7 @@ external ID or runtime correlation when the owner is unambiguous, and device
 totals include nested operations. These figures can differ from the native
 PyTorch Profiler text table.
 
-#### Analyze HIP cross-stream waits on DCU
+#### Analyze HIP cross-stream waits on HCU
 
 Capture the PyTorch Profiler trace and the DTK `hipprof` trace in the same
 training run. Enable PyTorch Profiler in Megatron as usual and run the training
@@ -184,7 +230,7 @@ When DTK barriers show that a signal goes through a queue with no recorded
 kernel or memory work and returns to the originating task queue, both API
 calls count toward `round_trip_waits`. The graph keeps the existing order
 on the originating queue. Waits with insufficient evidence remain unresolved.
-On the tested DCU stack, PyTorch's synchronization option produced HIP API
+On the tested HCU stack, PyTorch's synchronization option produced HIP API
 calls without the event handles needed for these matches.
 
 #### Advanced Usage

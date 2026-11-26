@@ -20,15 +20,19 @@ class CommunicationAnalysis:
         pass
 
     @classmethod
-    def get_comm_comp_overlap(cls, t: "Trace", visualize: bool = True) -> pd.DataFrame:
+    def get_comm_comp_overlap(
+        cls, t: "Trace", visualize: bool = True, include_times: bool = False
+    ) -> pd.DataFrame:
         """
         Communication analysis implementation. See `get_comm_comp_overlap` in `trace_analysis.py` for details.
         """
         sym_table = t.symbol_table.get_sym_table()
 
-        def get_comm_comp_overlap_value(trace_df: pd.DataFrame) -> float:
+        def get_comm_comp_overlap_times(
+            trace_df: pd.DataFrame,
+        ) -> tuple[float, float]:
             """
-            Compute the overlap percentage between communication and computation kernels for one rank.
+            Return the communication and overlapping durations, in microseconds.
             """
             gpu_kernels = trace_df.loc[t.symbol_table.get_gpu_kernel_mask(trace_df)].copy()
             names = gpu_kernels["name"].map(sym_table.__getitem__)
@@ -47,7 +51,7 @@ class CommunicationAnalysis:
             )
             communication_time = (comm_kernels["end"] - comm_kernels["ts"]).sum()
             if communication_time == 0:
-                return float("nan")
+                return 0.0, 0.0
 
             # When a communication kernel starts and ends, the cumulative status is changed by 1 and -1;
             # when a computation kernel starts and ends, the cumulative status is changed by 2 and -2.
@@ -72,13 +76,16 @@ class CommunicationAnalysis:
                 status_df.shift(-1).dropna(), left_index=True, right_index=True
             )
             overlap_time = (shifted_overlap["time_y"] - shifted_overlap["time_x"]).sum()
-            return overlap_time / communication_time
+            return communication_time, overlap_time
 
         result: Dict[str, List[float]] = defaultdict(list)
         for rank, trace_df in t.traces.items():
+            communication_time, overlap_time = get_comm_comp_overlap_times(trace_df)
             result["rank"].append(rank)
+            result["communication_time_us"].append(communication_time)
+            result["overlap_time_us"].append(overlap_time)
             result["comp_comm_overlap_ratio"].append(
-                get_comm_comp_overlap_value(trace_df)
+                overlap_time / communication_time if communication_time else float("nan")
             )
         result_df = pd.DataFrame(result)
         result_df["comp_comm_overlap_pctg"] = round(
@@ -102,4 +109,7 @@ class CommunicationAnalysis:
             fig.update_layout(yaxis_tickformat=".2%")
             fig.show()
 
-        return result_df[["rank", "comp_comm_overlap_pctg"]]
+        columns = ["rank", "comp_comm_overlap_pctg"]
+        if include_times:
+            columns += ["communication_time_us", "overlap_time_us"]
+        return result_df[columns]

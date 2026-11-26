@@ -3,6 +3,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import multiprocessing as mp
+import re
 from enum import Enum
 from pathlib import Path
 from typing import List, Tuple
@@ -68,6 +69,11 @@ def is_comm_kernel(name: str) -> bool:
         A boolean indicating if the kernel is a communication kernel.
     """
     return CommunicateKernelGroupingPattern.match(name)
+
+
+def is_allreduce_kernel(name: str) -> bool:
+    """Identify an AllReduce kernel from a HCU activity name."""
+    return bool(is_comm_kernel(name) and re.search(r"all_?reduce", name, re.IGNORECASE))
 
 
 def is_memory_kernel(name: str) -> bool:

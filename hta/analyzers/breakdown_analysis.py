@@ -10,6 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from hta.common.trace_filter import GPUKernelFilter
 from hta.common.trace_symbol_table import decode_symbol_id_to_symbol_name
+from hta.common.types import ProfilerStepGroupingPattern
 from hta.configs.config import logger
 from hta.utils.utils import (
     get_kernel_type,
@@ -509,70 +510,44 @@ class BreakdownAnalysis:
     def _get_gpu_kernel_type_time(
         cls, gpu_kernels: pd.DataFrame, kernel_type_to_analysis: List[str]
     ) -> pd.DataFrame:
-        overlap_kernel_type_df = pd.DataFrame(
-            {
-                "status": pd.Series(dtype="str"),
-                "time": pd.Series(dtype="int"),
-            }
-        )
-
-        kernel_t_mapping: Dict[str, int] = defaultdict(int)
+        boundaries = []
+        kernel_t_mapping: Dict[str, int] = {}
         for idx, kernel_type in enumerate(kernel_type_to_analysis):
             value = 1 << idx
             kernel_t_mapping[kernel_type] = value
             kernel_t_df = merge_kernel_intervals(
                 gpu_kernels[gpu_kernels["kernel_type"].eq(kernel_type)].copy()
             )
-
-            overlap_kernel_type_df = (
-                pd.concat(
+            if not kernel_t_df.empty:
+                boundaries.extend(
                     [
-                        overlap_kernel_type_df,
-                        kernel_t_df.melt(var_name="status", value_name="time").replace(
-                            {"ts": value, "end": -value}
-                        ),
+                        pd.DataFrame({"time": kernel_t_df["ts"], "status": value}),
+                        pd.DataFrame({"time": kernel_t_df["end"], "status": -value}),
                     ]
                 )
-                .sort_values(by="time")
-                .reset_index(drop=True)
+        if not boundaries:
+            return pd.DataFrame(
+                {"kernel_type": pd.Series(dtype="str"), "sum": pd.Series(dtype="float")}
             )
 
-        overlap_kernel_type_df["running"] = overlap_kernel_type_df["status"].cumsum()
-        overlap_kernel_type_df["next_time"] = overlap_kernel_type_df["time"].shift(-1)
-        unique_running = overlap_kernel_type_df["running"].unique()
-        running_mapping: Dict[int, str] = defaultdict(str)
-        for u_running in unique_running:
-            if u_running > 0:
-                for k_t, v_t in kernel_t_mapping.items():
-                    if u_running & v_t:
-                        if u_running not in running_mapping:
-                            running_mapping[u_running] = k_t
-                        else:
-                            # FIXME linter mismatch between fbcode and git T183519933
-                            # fmt: off
-                            running_mapping[u_running] = (
-                                f"{running_mapping[u_running]} overlapping {k_t}"
-                            )
-                            # fmt: on
-
-        overlap_kernel_type_df["kernel_type"] = ""
-        overlap_kernel_type_df = overlap_kernel_type_df[
-            overlap_kernel_type_df["running"] > 0
-        ]
-        for running in running_mapping:
-            overlap_kernel_type_df.loc[
-                overlap_kernel_type_df["running"].eq(running), "kernel_type"
-            ] = running_mapping[running]
-        overlap_kernel_type_df["dur"] = (
-            overlap_kernel_type_df["next_time"] - overlap_kernel_type_df["time"]
-        ).astype(int)
-
-        overlap_kernel_type_df = overlap_kernel_type_df.groupby(by=["kernel_type"])[
-            "dur"
-        ].agg(["sum"])
-        overlap_kernel_type_df.reset_index(inplace=True)
-
-        return overlap_kernel_type_df
+        # Apply all changes at the same timestamp together. A kernel ending
+        # when another begins does not create a separate overlap interval.
+        timeline = (
+            pd.concat(boundaries, ignore_index=True)
+            .groupby("time", as_index=False, sort=True)["status"]
+            .sum()
+        )
+        running = timeline["status"].cumsum()
+        intervals = timeline.loc[running.gt(0), ["time"]].copy()
+        intervals["kernel_type"] = running.loc[intervals.index].map(
+            lambda mask: " overlapping ".join(
+                name for name, value in kernel_t_mapping.items() if mask & value
+            )
+        )
+        # Trace timestamps are in microseconds and can contain fractions.
+        # Truncating before summing loses up to a microsecond per interval.
+        intervals["dur"] = timeline["time"].shift(-1) - timeline["time"]
+        return intervals.groupby("kernel_type")["dur"].agg(["sum"]).reset_index()
 
     @classmethod
     def _aggr_gpu_kernel_time(
@@ -645,27 +620,82 @@ class BreakdownAnalysis:
         return kernel_time - kernel_run_time, kernel_time
 
     @classmethod
+    def _temporal_activity(cls, t: "Trace", frame: pd.DataFrame) -> pd.DataFrame:
+        symbols = t.symbol_table
+        activity = symbols.get_gpu_kernel_mask(frame)
+        sync_cat = symbols.get_sym_id_map().get("cuda_sync")
+        if sync_cat is not None:
+            activity |= frame["cat"].eq(sync_cat) & frame["stream"].ne(-1)
+        events = frame.loc[activity, ["name", "ts", "dur"]].copy()
+        names = events["name"].map(symbols.get_sym_table().__getitem__)
+        events["kernel_type"] = names.map(get_kernel_type)
+        return events
+
+    @staticmethod
+    def _duration_in_window(intervals: pd.DataFrame, start: float, end: float) -> float:
+        """Measure the intersection with already merged, sorted activity intervals."""
+        first = intervals["end"].searchsorted(start, side="right")
+        last = intervals["ts"].searchsorted(end, side="left")
+        window = intervals.iloc[first:last]
+        return (window["end"].clip(upper=end) - window["ts"].clip(lower=start)).sum()
+
+    @classmethod
+    def get_profiler_step_breakdown(cls, t: "Trace") -> pd.DataFrame:
+        """Measure HCU activity inside each CPU ProfilerStep annotation, in µs."""
+        symbols = t.symbol_table
+        names = symbols.get_sym_table()
+        host_annotation = symbols.get_sym_id_map().get("user_annotation", -1)
+        pattern = ProfilerStepGroupingPattern.pattern
+        step_numbers = {
+            symbol: int(match.group(1))
+            for symbol in symbols.get_profiler_step_ids()
+            if (match := pattern.match(names[symbol])) is not None
+        }
+        rows = []
+        for rank, frame in t.traces.items():
+            markers = frame.loc[
+                frame["cat"].eq(host_annotation)
+                & frame["name"].isin(step_numbers)
+                & frame["dur"].gt(0),
+                ["name", "ts", "dur"],
+            ].drop_duplicates()
+            if markers.empty:
+                continue
+
+            events = cls._temporal_activity(t, frame)
+            active = merge_kernel_intervals(events[["ts", "dur"]].copy())
+            compute = merge_kernel_intervals(
+                events.loc[events["kernel_type"].eq(KernelType.COMPUTATION.name), ["ts", "dur"]].copy()
+            )
+            for name, start, total in markers.itertuples(index=False, name=None):
+                # The retained 'end' column can predate trace timestamp alignment.
+                end = start + total
+                active_us = min(total, cls._duration_in_window(active, start, end))
+                compute_us = min(active_us, cls._duration_in_window(compute, start, end))
+                rows.append((
+                    rank, step_numbers[name], start, total, compute_us,
+                    active_us - compute_us, total - active_us,
+                ))
+        columns = [
+            "rank", "profiler_step", "start_us", "step_time_us", "compute_time_us",
+            "other_activity_us", "no_activity_us",
+        ]
+        return pd.DataFrame(rows, columns=columns).sort_values(
+            ["profiler_step", "rank", "start_us"], ignore_index=True
+        )
+
+    @classmethod
     def get_temporal_breakdown(cls, t: "Trace", visualize: bool = True) -> pd.DataFrame:
         """
         Temporal breakdown implementation. See `get_temporal_breakdown` in `trace_analysis.py` for details.
         """
-        sym_table = t.symbol_table.get_sym_table()
-        sync_cat = t.symbol_table.get_sym_id_map().get("cuda_sync")
-
         def idle_time_per_rank(trace_df: pd.DataFrame) -> Tuple[int, int, int, int]:
             """returns idle_time (us) , compute_time (us), non_compute_time (us), total_time (us)"""
-            activity = t.symbol_table.get_gpu_kernel_mask(trace_df)
-            if sync_cat is not None:
-                # Keep stream-level synchronization in the non-compute timeline.
-                activity |= trace_df["cat"].eq(sync_cat) & trace_df["stream"].ne(-1)
-            gpu_kernels = trace_df.loc[activity].copy()
+            gpu_kernels = cls._temporal_activity(t, trace_df)
             if gpu_kernels.empty:
                 return 0, 0, 0, 0
 
             idle_time, kernel_time = cls._get_idle_time_for_kernels(gpu_kernels)
-
-            names = gpu_kernels["name"].map(sym_table.__getitem__)
-            gpu_kernels["kernel_type"] = names.map(get_kernel_type)
 
             # Isolate computation kernels and merge each one of them.
             comp_kernels = merge_kernel_intervals(

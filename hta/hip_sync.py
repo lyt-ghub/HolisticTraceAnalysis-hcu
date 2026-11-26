@@ -2,7 +2,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Add DCU stream waits to a Kineto trace using a same-process DTK hipprof trace."""
+"""Add HCU stream waits to a Kineto trace using a same-process DTK hipprof trace."""
 
 import argparse
 from bisect import bisect_left, bisect_right
@@ -318,7 +318,7 @@ def augment_hip_stream_waits(
         dst, dst_mapped = resolve_stream(wait)
         if record.completes_kernel:
             # The launch itself records the completion event. Require exactly
-            # one corresponding DCU kernel on the resolved stream.
+            # one corresponding HCU kernel on the resolved stream.
             kernels = kernels_by_correlation.get(record.correlation, ())
             if len(kernels) != 1 or kernels[0] not in src:
                 continue
@@ -342,7 +342,7 @@ def augment_hip_stream_waits(
                 "name": "Stream Wait Event",
                 "pid": dst_device,
                 "tid": dst_stream,
-                # Zero duration keeps the CPU submission marker out of DCU timings.
+                # Zero duration keeps the CPU submission marker out of HCU timings.
                 "ts": event["ts"],
                 "dur": 0,
                 "args": {

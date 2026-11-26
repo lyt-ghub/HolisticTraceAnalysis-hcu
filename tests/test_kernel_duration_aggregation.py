@@ -9,6 +9,35 @@ from hta.analyzers.breakdown_analysis import BreakdownAnalysis
 
 
 class KernelDurationAggregationTest(unittest.TestCase):
+    def test_kernel_type_totals_preserve_submicrosecond_intervals(self):
+        events = pd.DataFrame(
+            {
+                "ts": [0.0, 0.75, 1.5, 1.75, 2.0, 2.5],
+                "dur": [0.5, 0.5, 0.75, 0.5, 0.5, 0.25],
+                "kernel_type": [
+                    "COMPUTATION",
+                    "COMPUTATION",
+                    "COMPUTATION",
+                    "COMPUTATION",
+                    "COMMUNICATION",
+                    "MEMORY",
+                ],
+            }
+        )
+
+        totals = BreakdownAnalysis._get_gpu_kernel_type_time(
+            events, ["COMPUTATION", "COMMUNICATION", "MEMORY"]
+        ).set_index("kernel_type")["sum"]
+        self.assertEqual(
+            totals.to_dict(),
+            {
+                "COMPUTATION": 1.5,
+                "COMPUTATION overlapping COMMUNICATION": 0.25,
+                "COMMUNICATION": 0.25,
+                "MEMORY": 0.25,
+            },
+        )
+
     def test_grouped_statistics_describe_individual_invocations(self):
         events = pd.DataFrame(
             {

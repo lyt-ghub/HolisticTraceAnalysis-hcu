@@ -37,18 +37,24 @@ class TraceAnalysis:
         self.t.load_traces(include_last_profiler_step)
         assert self.t.is_parsed is True
 
-    def get_comm_comp_overlap(self, visualize: bool = True) -> pd.DataFrame:
+    def get_comm_comp_overlap(
+        self, visualize: bool = True, include_times: bool = False
+    ) -> pd.DataFrame:
         r"""
         Compute the communication-computation overlap percentage for each rank.
 
         Args:
             visualize (bool): Set to True to display the graph. Default = True.
+            include_times (bool): Include the communication and overlapping
+                durations in microseconds. Default = False.
 
         Returns:
             pd.DataFrame
                 A dataframe containing the communication computation overlap percentage for each rank.
         """
-        return CommunicationAnalysis.get_comm_comp_overlap(self.t, visualize)
+        return CommunicationAnalysis.get_comm_comp_overlap(
+            self.t, visualize, include_times
+        )
 
     def get_profiler_steps(self) -> List[int]:
         r"""
@@ -245,6 +251,10 @@ class TraceAnalysis:
                 time for each rank.
         """
         return BreakdownAnalysis.get_temporal_breakdown(self.t, visualize)
+
+    def get_profiler_step_breakdown(self) -> pd.DataFrame:
+        """Return HCU time by rank within each CPU ProfilerStep, in microseconds."""
+        return BreakdownAnalysis.get_profiler_step_breakdown(self.t)
 
     def get_frequent_cuda_kernel_sequences(
         self,
